@@ -27,6 +27,7 @@ var (
 	AppleBaseUrl                    = "https://amp-api.music.apple.com"
 	AppleListPlaylistsEndpoint      = "/v1/me/library/playlists/p.PO4Yc28O6xre"
 	AppleListPlaylistTracksEndpoint = "/v1/me/library/playlists/%s/tracks"
+	AppleSongsEndpoint              = "/v1/me/library/songs"
 
 	SpotifyApiBaseUrl             = "https://api.spotify.com/v1"
 	SpotifySearchEndpoint         = "/search"
@@ -39,7 +40,7 @@ var (
 )
 
 type Engine struct {
-	httpc struct {
+	h struct {
 		c  *http.Client
 		mu sync.Mutex
 	}
@@ -62,7 +63,7 @@ func NewEngine(c *cli.Context) (*Engine, error) {
 		ctx: c.Context,
 	}
 
-	e.httpc.c = &http.Client{
+	e.h.c = &http.Client{
 		Timeout: 2 * time.Second,
 	}
 
@@ -115,8 +116,12 @@ var run = &cli.Command{
 		&cli.StringFlag{
 			Name: "playlist-id",
 		},
+		&cli.BoolFlag{
+			Name: "library",
+		},
 		&cli.StringFlag{
-			Name: "name",
+			Name:     "name",
+			Required: true,
 		},
 	},
 	Action: func(c *cli.Context) error {
@@ -126,7 +131,8 @@ var run = &cli.Command{
 		}
 
 		pid := c.String("playlist-id")
-		if pid == "" {
+		library := c.Bool("library")
+		if pid == "" && !library {
 			return fmt.Errorf("no playlist id provided")
 		}
 
@@ -154,7 +160,16 @@ var run = &cli.Command{
 
 		for len(items) < total {
 			fmt.Printf("\rfetched %d/%d items", len(items), total)
-			res, err := e.applePlaylistTracks(pid, 100, 0)
+
+			var res *models.ApplePlaylistTracksResponse
+			var err error
+
+			if library {
+				res, err = e.appleLibraryTracks(100, len(items))
+			} else {
+				res, err = e.applePlaylistTracks(pid, 100, len(items))
+			}
+
 			if err != nil {
 				return err
 			}
@@ -247,7 +262,7 @@ func (e *Engine) applePlaylistTracks(playlistId string, limit, offset int) (*mod
 		return nil, err
 	}
 
-	res, err := e.httpc.c.Do(req)
+	res, err := e.h.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +283,35 @@ func (e *Engine) applePlaylistTracks(playlistId string, limit, offset int) (*mod
 	}
 
 	return &pres, nil
+}
+
+func (e *Engine) appleLibraryTracks(limit, offset int) (*models.ApplePlaylistTracksResponse, error) {
+	req, err := e.makeAppleRequest(AppleBaseUrl + AppleSongsEndpoint + fmt.Sprintf("?include=library-songs&format[resources]=map&limit=%d&offset=%d&sort=-dateAdded", limit, offset))
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := e.h.c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("error fetching library: %w", err)
+	}
+
+	j, err := gzipToString(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var sres models.ApplePlaylistTracksResponse
+	if err := json.Unmarshal(j, &sres); err != nil {
+		return nil, err
+	}
+
+	return &sres, nil
 }
 
 func (e *Engine) makeSpotifyRequest(method, endpoint string, body *[]byte) (*http.Request, error) {
@@ -305,7 +349,7 @@ func (e *Engine) spotifyCreatePlaylist(name string) (*models.SpotifyCreatePlayli
 		return nil, err
 	}
 
-	res, err := e.httpc.c.Do(req)
+	res, err := e.h.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +379,7 @@ func (e *Engine) spotifyAddItemsToPlaylist(pid string, items []string) (*models.
 		return nil, err
 	}
 
-	res, err := e.httpc.c.Do(req)
+	res, err := e.h.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +414,7 @@ func (e *Engine) spotifySearchForTrack(q string) (*models.SpotifySearchResponse,
 		return nil, err
 	}
 
-	res, err := e.httpc.c.Do(req)
+	res, err := e.h.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +434,7 @@ func (e *Engine) spotifyGetMe() (*models.SpotifyMeResponse, error) {
 		return nil, err
 	}
 
-	res, err := e.httpc.c.Do(req)
+	res, err := e.h.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +495,7 @@ func (e *Engine) spotifyCreateAccessToken() (*models.SpotifyGetTokenResponse, er
 	req.Header.Add("content-type", "application/x-www-form-urlencoded")
 	req.Header.Add("authorization", fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(e.config.spotifyClientId+":"+e.config.spotifyClientSecret))))
 
-	res, err := e.httpc.c.Do(req)
+	res, err := e.h.c.Do(req)
 	if err != nil {
 		return nil, err
 	}
