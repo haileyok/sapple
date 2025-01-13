@@ -461,7 +461,7 @@ func (e *Engine) spotifyCreateAccessToken() (*models.SpotifyGetTokenResponse, er
 	handle := func(c echo.Context) error {
 		code = c.QueryParam("code")
 		wg.Done()
-		return nil
+		return c.String(200, "authed! you can now close this tab.")
 	}
 
 	ech.Add("GET", "/callback", handle)
